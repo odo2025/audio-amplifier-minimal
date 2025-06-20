@@ -1,7 +1,8 @@
 name: Flutter Build
 
 on: 
-  env:
+
+  fork:
     KEY_ALIAS: androiddebugkey
     KEY_PASSWORD: android
     STORE_PASSWORD: android
