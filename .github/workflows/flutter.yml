@@ -2,16 +2,18 @@ name: Flutter Build
 
 on: 
 
-  fork:
-    KEY_ALIAS: androiddebugkey
-    KEY_PASSWORD: android
-    STORE_PASSWORD: android
 
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+  
+env:
+  KEY_ALIAS: androiddebugkey
+  KEY_PASSWORD: android
+  STORE_PASSWORD: android
+
 
 jobs:
   build:
