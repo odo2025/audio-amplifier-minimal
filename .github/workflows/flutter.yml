@@ -1,6 +1,11 @@
 name: Flutter Build
 
-on:
+on: 
+  env:
+    KEY_ALIAS: androiddebugkey
+    KEY_PASSWORD: android
+    STORE_PASSWORD: android
+
   push:
     branches: [ main ]
   pull_request:
