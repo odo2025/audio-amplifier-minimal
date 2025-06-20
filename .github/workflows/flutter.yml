@@ -32,7 +32,13 @@ jobs:
         run: flutter pub get
           
       - name: Build APK
-        run: flutter build apk --debug
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > keystore.jks
+          flutter build apk --release --split-per-abi --no-shrink
+        env:
+          KEY_PASSWORD: android
+          STORE_PASSWORD: android
+
       
       - name: Upload APK
         uses: actions/upload-artifact@v4
