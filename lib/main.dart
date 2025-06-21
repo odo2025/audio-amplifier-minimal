@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 void main() {
   runApp(const AudioAmplifierApp());
@@ -33,17 +32,6 @@ class _AudioAmplifierHomeState extends State<AudioAmplifierHome> {
   double _amplificationLevel = 0.5;
   double _mixLevel = 0.5;
   double _morphingPosition = 0.5; // 0=Ultra-rapide, 0.5=Équilibré, 1=Haute Qualité
-
-  @override
-  void initState() {
-    super.initState();
-    _requestPermissions();
-  }
-
-  Future<void> _requestPermissions() async {
-    await Permission.microphone.request();
-    await Permission.bluetooth.request();
-  }
 
   void _toggleAudio() {
     setState(() {
