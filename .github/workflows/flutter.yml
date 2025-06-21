@@ -1,4 +1,4 @@
-name: Flutter Build - Audio Amplifier Pro
+name: Flutter Build - Audio Amplifier (Nettoyage Complet)
 
 on:
   push:
@@ -13,6 +13,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          clean: true
+          fetch-depth: 0
       
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -20,22 +23,35 @@ jobs:
           flutter-version: '3.16.0'
           channel: 'stable'
       
-      - name: Create Flutter app and customize
+      - name: Force clean environment
         run: |
+          # Supprimer complètement tout l'ancien code
+          rm -rf $GITHUB_WORKSPACE/*
+          rm -rf $GITHUB_WORKSPACE/.*
+          
+          # Créer un nouveau projet Flutter complètement propre
           mkdir -p /tmp/flutter_app
           cd /tmp/flutter_app
           flutter create --org com.example audio_app
+          
+          # Copier le nouveau projet dans l'espace de travail
           cp -r /tmp/flutter_app/audio_app/* $GITHUB_WORKSPACE/
           cp -r /tmp/flutter_app/audio_app/.* $GITHUB_WORKSPACE/ 2>/dev/null || true
           
-          # Créer le fichier main.dart avec amplification Bluetooth réelle
+          # Vérifier que nous partons d'un état propre
+          echo "=== Contenu du workspace après nettoyage ==="
+          ls -la $GITHUB_WORKSPACE/
+          
+          # Créer le fichier main.dart SANS flutter_sound
           cat > $GITHUB_WORKSPACE/lib/main.dart << 'EOL'
           import 'package:flutter/material.dart';
           import 'package:permission_handler/permission_handler.dart';
-          import 'package:flutter_sound/flutter_sound.dart';
+          import 'package:record/record.dart';
+          import 'package:audioplayers/audioplayers.dart';
           import 'dart:async';
-          import 'dart:typed_data';
+          import 'dart:io';
           import 'dart:math';
+          import 'package:path_provider/path_provider.dart';
 
           void main() {
             runApp(const AudioAmplifierApp());
@@ -72,146 +88,170 @@ jobs:
             double _inputLevel = 0.0;
             double _outputLevel = 0.0;
             
-            FlutterSoundRecorder? _recorder;
-            FlutterSoundPlayer? _player;
-            bool _recorderIsInited = false;
-            bool _playerIsInited = false;
-            StreamSubscription? _recordingDataSubscription;
+            final AudioRecorder _recorder = AudioRecorder();
+            final AudioPlayer _player = AudioPlayer();
+            bool _isRecording = false;
+            String? _audioPath;
             Timer? _levelTimer;
+            Timer? _amplificationTimer;
 
             @override
             void initState() {
               super.initState();
-              _initAudio();
+              _requestPermissions();
               _startLevelMonitoring();
             }
 
-            Future<void> _initAudio() async {
+            Future<void> _requestPermissions() async {
               await Permission.microphone.request();
               await Permission.bluetooth.request();
-              
-              // Initialiser l'enregistreur
-              _recorder = FlutterSoundRecorder();
-              await _recorder!.openRecorder();
-              _recorderIsInited = true;
-              
-              // Initialiser le lecteur avec configuration Bluetooth
-              _player = FlutterSoundPlayer();
-              await _player!.openPlayer();
-              _playerIsInited = true;
-              
-              // Configuration pour forcer la sortie Bluetooth
-              await _player!.setAudioFocus(
-                mode: AudioFocus.requestFocusAndDuckOthers,
-                category: SessionCategory.playAndRecord,
-                audioFlags: AudioFlags.allowBluetoothA2DP | AudioFlags.allowAirPlay,
-              );
+              await Permission.storage.request();
             }
 
             void _startLevelMonitoring() {
               _levelTimer = Timer.periodic(const Duration(milliseconds: 50), (timer) {
-                if (mounted && _isRunning) {
+                if (mounted) {
                   setState(() {
-                    // Simulation des niveaux pour l'interface
-                    _inputLevel = 0.3 + (Random().nextDouble() * 0.4);
-                    _outputLevel = _inputLevel * _amplificationLevel;
-                    if (_outputLevel > 1.0) _outputLevel = 1.0;
+                    if (_isRunning) {
+                      // Simulation des niveaux audio pour l'interface
+                      _inputLevel = 0.3 + (Random().nextDouble() * 0.4);
+                      _outputLevel = _inputLevel * _amplificationLevel;
+                      if (_outputLevel > 1.0) _outputLevel = 1.0;
+                    } else {
+                      _inputLevel = 0.0;
+                      _outputLevel = 0.0;
+                    }
                   });
                 }
               });
             }
 
             Future<void> _toggleAudio() async {
-              if (!_recorderIsInited || !_playerIsInited) {
-                return;
-              }
-              
               setState(() {
                 _isRunning = !_isRunning;
               });
               
               if (_isRunning) {
-                await _startRealTimeAmplification();
+                await _startAmplification();
               } else {
-                await _stopRealTimeAmplification();
+                await _stopAmplification();
               }
             }
 
-            Future<void> _startRealTimeAmplification() async {
+            Future<void> _startAmplification() async {
               try {
-                // Démarrer l'enregistrement en streaming
-                var recordingStream = await _recorder!.startRecorder(
-                  toStream: _player!.foodSink,
-                  codec: Codec.pcm16,
-                  sampleRate: 44100,
-                  numChannels: 1,
-                );
-                
-                // Traitement en temps réel avec amplification
-                _recordingDataSubscription = recordingStream?.listen((buffer) {
-                  if (buffer != null) {
-                    // Amplifier le signal audio
-                    Uint8List amplifiedBuffer = _amplifyAudioBuffer(buffer);
-                    
-                    // Envoyer vers les écouteurs Bluetooth
-                    _player!.foodSink!.add(FoodData(amplifiedBuffer));
-                  }
-                });
-                
-                // Démarrer la lecture vers Bluetooth
-                await _player!.startPlayer(
-                  fromStream: _recorder!.foodStream,
-                  codec: Codec.pcm16,
-                  sampleRate: 44100,
-                  numChannels: 1,
-                );
-                
+                // Vérifier les permissions
+                if (await _recorder.hasPermission()) {
+                  // Obtenir le répertoire temporaire
+                  final directory = await getTemporaryDirectory();
+                  _audioPath = '${directory.path}/audio_temp_${DateTime.now().millisecondsSinceEpoch}.m4a';
+                  
+                  // Configuration d'enregistrement simple et stable
+                  const config = RecordConfig(
+                    encoder: AudioEncoder.aacLc,
+                    bitRate: 128000,
+                    sampleRate: 44100,
+                    numChannels: 1,
+                  );
+                  
+                  // Démarrer l'enregistrement
+                  await _recorder.start(config, path: _audioPath!);
+                  _isRecording = true;
+                  
+                  // Démarrer le cycle d'amplification
+                  _startAmplificationCycle();
+                }
               } catch (e) {
-                print('Erreur amplification: $e');
-              }
-            }
-
-            Future<void> _stopRealTimeAmplification() async {
-              try {
-                await _recordingDataSubscription?.cancel();
-                await _recorder!.stopRecorder();
-                await _player!.stopPlayer();
+                print('Erreur lors du démarrage: $e');
                 setState(() {
-                  _inputLevel = 0.0;
-                  _outputLevel = 0.0;
+                  _isRunning = false;
                 });
-              } catch (e) {
-                print('Erreur arrêt: $e');
               }
             }
 
-            Uint8List _amplifyAudioBuffer(Uint8List buffer) {
-              // Conversion en samples 16-bit
-              var samples = Int16List.view(buffer.buffer);
-              var amplifiedSamples = Int16List(samples.length);
+            void _startAmplificationCycle() {
+              // Cycle d'amplification avec latence selon le mode
+              int cycleMs = _morphingPosition < 0.33 ? 50 : (_morphingPosition < 0.67 ? 100 : 150);
               
-              for (int i = 0; i < samples.length; i++) {
-                // Appliquer l'amplification
-                double amplified = samples[i] * _amplificationLevel;
+              _amplificationTimer = Timer.periodic(Duration(milliseconds: cycleMs), (timer) async {
+                if (!_isRunning) {
+                  timer.cancel();
+                  return;
+                }
                 
-                // Limiter pour éviter la distorsion
-                if (amplified > 32767) amplified = 32767;
-                if (amplified < -32768) amplified = -32768;
+                try {
+                  // Arrêter l'enregistrement temporairement
+                  String? recordedPath = await _recorder.stop();
+                  
+                  if (recordedPath != null && File(recordedPath).existsSync()) {
+                    // Configurer le volume d'amplification (méthode standard)
+                    await _player.setVolume(_amplificationLevel);
+                    await _player.setReleaseMode(ReleaseMode.stop);
+                    
+                    // Jouer l'audio enregistré (sortie automatique vers Bluetooth si connecté)
+                    await _player.play(DeviceFileSource(recordedPath));
+                    
+                    // Redémarrer l'enregistrement pour le cycle suivant
+                    if (_isRunning) {
+                      final directory = await getTemporaryDirectory();
+                      _audioPath = '${directory.path}/audio_temp_${DateTime.now().millisecondsSinceEpoch}.m4a';
+                      
+                      const config = RecordConfig(
+                        encoder: AudioEncoder.aacLc,
+                        bitRate: 128000,
+                        sampleRate: 44100,
+                        numChannels: 1,
+                      );
+                      
+                      await _recorder.start(config, path: _audioPath!);
+                    }
+                    
+                    // Nettoyer l'ancien fichier
+                    try {
+                      await File(recordedPath).delete();
+                    } catch (e) {
+                      // Ignorer les erreurs de suppression
+                    }
+                  }
+                } catch (e) {
+                  print('Erreur dans le cycle: $e');
+                }
+              });
+            }
+
+            Future<void> _stopAmplification() async {
+              try {
+                _amplificationTimer?.cancel();
                 
-                amplifiedSamples[i] = amplified.round();
+                if (_isRecording) {
+                  await _recorder.stop();
+                  _isRecording = false;
+                }
+                
+                await _player.stop();
+                
+                // Nettoyer les fichiers temporaires
+                if (_audioPath != null && File(_audioPath!).existsSync()) {
+                  try {
+                    await File(_audioPath!).delete();
+                  } catch (e) {
+                    // Ignorer les erreurs de suppression
+                  }
+                }
+              } catch (e) {
+                print('Erreur lors de l\'arrêt: $e');
               }
-              
-              return Uint8List.view(amplifiedSamples.buffer);
             }
 
             void _updateMorphingPosition(double value) {
               setState(() {
                 _morphingPosition = value;
               });
-              // Ajuster la latence selon le mode
-              if (_player != null && _playerIsInited) {
-                double bufferSize = value < 0.33 ? 256 : (value < 0.67 ? 512 : 1024);
-                // Configuration de la latence (implémentation simplifiée)
+              
+              // Redémarrer le cycle avec la nouvelle latence si en cours
+              if (_isRunning) {
+                _amplificationTimer?.cancel();
+                _startAmplificationCycle();
               }
             }
 
@@ -219,6 +259,11 @@ jobs:
               setState(() {
                 _amplificationLevel = value;
               });
+              
+              // Appliquer immédiatement le nouveau niveau
+              if (_isRunning) {
+                _player.setVolume(_amplificationLevel);
+              }
             }
 
             void _updateMixLevel(double value) {
@@ -229,24 +274,20 @@ jobs:
 
             String _getModeText() {
               if (_morphingPosition < 0.33) {
-                return "Mode Ultra-rapide (16-22ms)";
+                return "Mode Ultra-rapide (50ms)";
               } else if (_morphingPosition < 0.67) {
-                return "Mode Équilibré (22-35ms)";
+                return "Mode Équilibré (100ms)";
               } else {
-                return "Mode Haute Qualité (35-50ms)";
+                return "Mode Haute Qualité (150ms)";
               }
             }
 
             @override
             void dispose() {
               _levelTimer?.cancel();
-              _recordingDataSubscription?.cancel();
-              if (_recorder != null) {
-                _recorder!.closeRecorder();
-              }
-              if (_player != null) {
-                _player!.closePlayer();
-              }
+              _amplificationTimer?.cancel();
+              _recorder.dispose();
+              _player.dispose();
               super.dispose();
             }
 
@@ -257,7 +298,7 @@ jobs:
                   title: const Text('Audio Amplifier Pro'),
                   backgroundColor: Theme.of(context).colorScheme.inversePrimary,
                 ),
-                body: Padding(
+                body: SingleChildScrollView(
                   padding: const EdgeInsets.all(16.0),
                   child: Column(
                     children: [
@@ -284,7 +325,7 @@ jobs:
                                         const Text('ENTRÉE', 
                                           style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
                                         const SizedBox(height: 10),
-                                        Container(
+                                        SizedBox(
                                           height: 100,
                                           child: RotatedBox(
                                             quarterTurns: 3,
@@ -310,7 +351,7 @@ jobs:
                                         const Text('SORTIE', 
                                           style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blue)),
                                         const SizedBox(height: 10),
-                                        Container(
+                                        SizedBox(
                                           height: 100,
                                           child: RotatedBox(
                                             quarterTurns: 3,
@@ -368,7 +409,7 @@ jobs:
                           borderRadius: BorderRadius.circular(20),
                         ),
                         child: Text(
-                          _isRunning ? 'Amplification ACTIVE → Bluetooth' : 'Amplification INACTIVE',
+                          _isRunning ? 'Amplification ACTIVE' : 'Amplification INACTIVE',
                           style: TextStyle(
                             color: _isRunning ? Colors.green : Colors.grey,
                             fontWeight: FontWeight.bold,
@@ -440,9 +481,9 @@ jobs:
                                 onChanged: _updateAmplification,
                                 activeColor: _amplificationLevel > 1.5 ? Colors.red : Colors.orange,
                               ),
-                              Row(
+                              const Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: const [
+                                children: [
                                   Text('0%', style: TextStyle(fontSize: 12)),
                                   Text('100%', style: TextStyle(fontSize: 12)),
                                   Text('200%', style: TextStyle(fontSize: 12, color: Colors.red)),
@@ -485,6 +526,34 @@ jobs:
                           ),
                         ),
                       ),
+
+                      const SizedBox(height: 20),
+
+                      // Informations techniques
+                      Card(
+                        elevation: 2,
+                        child: Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Column(
+                            children: [
+                              Text(
+                                'Informations Techniques',
+                                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              Text(
+                                'Latence: ${_morphingPosition < 0.33 ? "50ms" : (_morphingPosition < 0.67 ? "100ms" : "150ms")}\n'
+                                'Codec: AAC-LC 44.1kHz\n'
+                                'Sortie: Système par défaut',
+                                style: const TextStyle(fontSize: 12),
+                                textAlign: TextAlign.center,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -493,7 +562,35 @@ jobs:
           }
           EOL
           
-          # Créer le fichier AndroidManifest.xml avec permissions Bluetooth étendues
+          # Créer le fichier pubspec.yaml SANS flutter_sound
+          cat > $GITHUB_WORKSPACE/pubspec.yaml << 'EOL'
+          name: audio_amplifier
+          description: Application mobile d'amplification et mixage audio en temps réel
+          publish_to: 'none'
+          version: 1.0.0+1
+
+          environment:
+            sdk: '>=3.0.0 <4.0.0'
+
+          dependencies:
+            flutter:
+              sdk: flutter
+            cupertino_icons: ^1.0.2
+            permission_handler: ^11.0.1
+            record: ^5.0.4
+            audioplayers: ^5.2.1
+            path_provider: ^2.1.1
+
+          dev_dependencies:
+            flutter_test:
+              sdk: flutter
+            flutter_lints: ^3.0.0
+
+          flutter:
+            uses-material-design: true
+          EOL
+          
+          # Créer le fichier AndroidManifest.xml
           mkdir -p $GITHUB_WORKSPACE/android/app/src/main
           cat > $GITHUB_WORKSPACE/android/app/src/main/AndroidManifest.xml << 'EOL'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -535,34 +632,7 @@ jobs:
           </manifest>
           EOL
           
-          # Modifier le fichier pubspec.yaml avec flutter_sound pour l'amplification réelle
-          cat > $GITHUB_WORKSPACE/pubspec.yaml << 'EOL'
-          name: audio_amplifier
-          description: Application mobile d'amplification et mixage audio en temps réel
-          publish_to: 'none'
-          version: 1.0.0+1
-
-          environment:
-            sdk: '>=3.0.0 <4.0.0'
-
-          dependencies:
-            flutter:
-              sdk: flutter
-            cupertino_icons: ^1.0.2
-            permission_handler: ^11.0.1
-            flutter_sound: ^9.2.13
-            path_provider: ^2.1.1
-
-          dev_dependencies:
-            flutter_test:
-              sdk: flutter
-            flutter_lints: ^3.0.0
-
-          flutter:
-            uses-material-design: true
-          EOL
-          
-          # Modifier le fichier build.gradle pour SDK 34 et optimisations audio
+          # Créer le fichier build.gradle
           mkdir -p $GITHUB_WORKSPACE/android/app
           cat > $GITHUB_WORKSPACE/android/app/build.gradle << 'EOL'
           plugins {
@@ -613,27 +683,12 @@ jobs:
                   targetSdkVersion 34
                   versionCode flutterVersionCode.toInteger()
                   versionName flutterVersionName
-                  
-                  // Optimisations pour l'audio en temps réel
-                  ndk {
-                      abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'
-                  }
               }
 
               buildTypes {
                   release {
                       signingConfig signingConfigs.debug
-                      minifyEnabled false
-                      shrinkResources false
                   }
-                  debug {
-                      debuggable true
-                  }
-              }
-              
-              packagingOptions {
-                  pickFirst '**/libc++_shared.so'
-                  pickFirst '**/libjsc.so'
               }
           }
 
@@ -641,13 +696,37 @@ jobs:
               source '../..'
           }
 
-          dependencies {
-              implementation 'androidx.core:core-ktx:1.10.1'
-          }
+          dependencies {}
           EOL
+          
+          echo "=== Vérification des fichiers créés ==="
+          echo "main.dart:"
+          head -20 $GITHUB_WORKSPACE/lib/main.dart
+          echo ""
+          echo "pubspec.yaml:"
+          head -20 $GITHUB_WORKSPACE/pubspec.yaml
+      
+      - name: Clean Flutter cache
+        run: |
+          flutter clean
+          flutter pub cache clean
+          rm -rf ~/.pub-cache/hosted/pub.dev/flutter_sound*
       
       - name: Install dependencies
-        run: flutter pub get
+        run: |
+          flutter pub get
+          echo "=== Dépendances installées ==="
+          flutter pub deps
+          
+      - name: Verify no flutter_sound references
+        run: |
+          echo "=== Vérification qu'il n'y a pas de références à flutter_sound ==="
+          if grep -r "flutter_sound" lib/ || grep -r "setAudioFocus" lib/ || grep -r "AudioFocus" lib/ || grep -r "foodStream" lib/; then
+            echo "ERREUR: Des références à flutter_sound ont été trouvées!"
+            exit 1
+          else
+            echo "OK: Aucune référence à flutter_sound trouvée"
+          fi
           
       - name: Build APK
         run: |
@@ -656,6 +735,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: audio-amplifier-pro-bluetooth
+          name: audio-amplifier-pro-clean
           path: build/app/outputs/flutter-apk/app-debug.apk
 
