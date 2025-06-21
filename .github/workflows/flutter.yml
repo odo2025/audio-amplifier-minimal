@@ -31,6 +31,10 @@ jobs:
           # Remplacer le contenu du fichier main.dart
           cat > $GITHUB_WORKSPACE/lib/main.dart << 'EOL'
           import 'package:flutter/material.dart';
+          import 'package:permission_handler/permission_handler.dart';
+          import 'package:flutter_sound/flutter_sound.dart';
+          import 'package:audio_session/audio_session.dart';
+          import 'dart:async';
 
           void main() {
             runApp(const AudioAmplifierApp());
@@ -64,29 +68,100 @@ jobs:
             double _amplificationLevel = 0.5;
             double _mixLevel = 0.5;
             double _morphingPosition = 0.5;
+            
+            FlutterSoundRecorder? _recorder;
+            FlutterSoundPlayer? _player;
+            bool _recorderIsInited = false;
+            bool _playerIsInited = false;
 
-            void _toggleAudio() {
+            @override
+            void initState() {
+              super.initState();
+              _initAudio();
+            }
+
+            Future<void> _initAudio() async {
+              await Permission.microphone.request();
+              await Permission.bluetooth.request();
+              
+              // Initialiser l'enregistreur
+              _recorder = FlutterSoundRecorder();
+              await _recorder!.openRecorder();
+              _recorderIsInited = true;
+              
+              // Initialiser le lecteur
+              _player = FlutterSoundPlayer();
+              await _player!.openPlayer();
+              _playerIsInited = true;
+              
+              // Configurer la session audio
+              final session = await AudioSession.instance;
+              await session.configure(AudioSessionConfiguration(
+                avAudioSessionCategory: AVAudioSessionCategory.playAndRecord,
+                avAudioSessionCategoryOptions: AVAudioSessionCategoryOptions.allowBluetooth,
+                avAudioSessionMode: AVAudioSessionMode.default_,
+                avAudioSessionRouteSharingPolicy: AVAudioSessionRouteSharingPolicy.defaultPolicy,
+                avAudioSessionSetActiveOptions: AVAudioSessionSetActiveOptions.none,
+                androidAudioAttributes: const AndroidAudioAttributes(
+                  contentType: AndroidAudioContentType.speech,
+                  flags: AndroidAudioFlags.none,
+                  usage: AndroidAudioUsage.voiceCommunication,
+                ),
+                androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
+                androidWillPauseWhenDucked: true,
+              ));
+            }
+
+            void _toggleAudio() async {
+              if (!_recorderIsInited || !_playerIsInited) {
+                return;
+              }
+              
               setState(() {
                 _isRunning = !_isRunning;
               });
+              
+              if (_isRunning) {
+                // Démarrer l'amplification
+                await _recorder!.startRecorder(
+                  toStream: _player!.foodSink,
+                  codec: Codec.pcm16,
+                );
+                await _player!.startPlayer(
+                  fromStream: _recorder!.foodStream,
+                  codec: Codec.pcm16,
+                  sampleRate: 44100,
+                  numChannels: 1,
+                );
+              } else {
+                // Arrêter l'amplification
+                await _recorder!.stopRecorder();
+                await _player!.stopPlayer();
+              }
             }
 
             void _updateMorphingPosition(double value) {
               setState(() {
                 _morphingPosition = value;
               });
+              // Ajuster la qualité audio en fonction de la position de morphing
             }
 
             void _updateAmplification(double value) {
               setState(() {
                 _amplificationLevel = value;
               });
+              // Ajuster le niveau d'amplification
+              if (_player != null && _playerIsInited) {
+                _player!.setVolume(_amplificationLevel * 2.0); // Amplification jusqu'à 2x
+              }
             }
 
             void _updateMixLevel(double value) {
               setState(() {
                 _mixLevel = value;
               });
+              // Ajuster le niveau de mixage (nécessite une implémentation plus complexe)
             }
 
             String _getModeText() {
@@ -97,6 +172,18 @@ jobs:
               } else {
                 return "Mode Haute Qualité";
               }
+            }
+
+            @override
+            void dispose() {
+              // Libérer les ressources
+              if (_recorder != null) {
+                _recorder!.closeRecorder();
+              }
+              if (_player != null) {
+                _player!.closePlayer();
+              }
+              super.dispose();
             }
 
             @override
@@ -209,7 +296,70 @@ jobs:
             }
           }
           EOL
+          
+          # Créer le fichier AndroidManifest.xml avec les permissions nécessaires
+          mkdir -p $GITHUB_WORKSPACE/android/app/src/main
+          cat > $GITHUB_WORKSPACE/android/app/src/main/AndroidManifest.xml << 'EOL'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+              <uses-permission android:name="android.permission.BLUETOOTH" />
+              
+              <application
+                  android:label="Audio Amplifier"
+                  android:name="${applicationName}"
+                  android:icon="@mipmap/ic_launcher">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTop"
+                      android:theme="@style/LaunchTheme"
+                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+                      android:hardwareAccelerated="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <meta-data
+                        android:name="io.flutter.embedding.android.NormalTheme"
+                        android:resource="@style/NormalTheme"
+                        />
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+                  <meta-data
+                      android:name="flutterEmbedding"
+                      android:value="2" />
+              </application>
+          </manifest>
+          EOL
+          
+          # Modifier le fichier pubspec.yaml pour ajouter les dépendances
+          cat > $GITHUB_WORKSPACE/pubspec.yaml << 'EOL'
+          name: audio_amplifier
+          description: Application mobile d'amplification et mixage audio en temps réel
+          publish_to: 'none'
+          version: 1.0.0+1
 
+          environment:
+            sdk: '>=3.0.0 <4.0.0'
+
+          dependencies:
+            flutter:
+              sdk: flutter
+            cupertino_icons: ^1.0.2
+            permission_handler: ^10.0.0
+            flutter_sound: ^9.2.13
+            audio_session: ^0.1.10
+
+          dev_dependencies:
+            flutter_test:
+              sdk: flutter
+            flutter_lints: ^2.0.0
+
+          flutter:
+            uses-material-design: true
+          EOL
+      
       - name: Install dependencies
         run: flutter pub get
           
