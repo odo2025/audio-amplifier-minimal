@@ -20,13 +20,114 @@ jobs:
           flutter-version: '3.16.0'
           channel: 'stable'
       
-      - name: Create Flutter app in temp directory
+      - name: Create and customize Flutter app
         run: |
-          mkdir -p /tmp/flutter_app
-          cd /tmp/flutter_app
-          flutter create --org com.example audio_app
-          cp -r /tmp/flutter_app/audio_app/* $GITHUB_WORKSPACE/
-          cp -r /tmp/flutter_app/audio_app/.* $GITHUB_WORKSPACE/ 2>/dev/null || true
+          flutter create .
+          cat > lib/main.dart << 'EOL'
+          import 'package:flutter/material.dart';
+
+          void main() {
+            runApp(const AudioAmplifierApp());
+          }
+
+          class AudioAmplifierApp extends StatelessWidget {
+            const AudioAmplifierApp({super.key});
+
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                title: 'Audio Amplifier v2',
+                theme: ThemeData(
+                  colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+                  useMaterial3: true,
+                ),
+                home: const AudioAmplifierHome(),
+              );
+            }
+          }
+
+          class AudioAmplifierHome extends StatefulWidget {
+            const AudioAmplifierHome({super.key});
+
+            @override
+            State<AudioAmplifierHome> createState() => _AudioAmplifierHomeState();
+          }
+
+          class _AudioAmplifierHomeState extends State<AudioAmplifierHome> {
+            bool _isRunning = false;
+            double _amplificationLevel = 0.5;
+            double _mixLevel = 0.5;
+
+            void _toggleAudio() {
+              setState(() {
+                _isRunning = !_isRunning;
+              });
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Text('Audio Amplifier v2'),
+                  backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+                ),
+                body: Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Container(
+                        width: 120,
+                        height: 120,
+                        margin: const EdgeInsets.all(20),
+                        child: ElevatedButton(
+                          onPressed: _toggleAudio,
+                          style: ElevatedButton.styleFrom(
+                            shape: const CircleBorder(),
+                            backgroundColor: _isRunning ? Colors.red : Colors.green,
+                          ),
+                          child: Text(
+                            _isRunning ? 'OFF' : 'ON',
+                            style: const TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      Text(
+                        'Amplification: ${(_amplificationLevel * 100).round()}%',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      Slider(
+                        value: _amplificationLevel,
+                        onChanged: (value) {
+                          setState(() {
+                            _amplificationLevel = value;
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 20),
+                      Text(
+                        'Mixage: ${(_mixLevel * 100).round()}%',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      Slider(
+                        value: _mixLevel,
+                        onChanged: (value) {
+                          setState(() {
+                            _mixLevel = value;
+                          });
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+          }
+          EOL
       
       - name: Install dependencies
         run: flutter pub get
@@ -34,15 +135,9 @@ jobs:
       - name: Build APK
         run: |
           flutter build apk --debug
-          # Afficher les fichiers générés pour le débogage
-          find build -name "*.apk" -type f
       
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
-          path: |
-            build/app/outputs/flutter-apk/*.apk
-            build/app/outputs/apk/**/*.apk
-          if-no-files-found: error  # Cette option affichera une erreur claire si aucun fichier n'est trouvé
-          
+          path: build/app/outputs/flutter-apk/app-debug.apk
